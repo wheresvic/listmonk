@@ -91,7 +91,7 @@ func install(app *App, qMap goyesql.Queries) {
 	if _, err := q.CreateCampaign.Exec(uuid.NewV4(),
 		"Test campaign",
 		"Welcome to listmonk",
-		"noreply@yoursite.com",
+		"No Reply <noreply@yoursite.com>",
 		`<h3>Hi {{ .Subscriber.FirstName }}!</h3>
 			This is a test e-mail campaign. Your second name is {{ .Subscriber.LastName }} and you are from {{ .Subscriber.Attribs.city }}.`,
 		"richtext",
@@ -105,7 +105,7 @@ func install(app *App, qMap goyesql.Queries) {
 	}
 
 	logger.Printf("Setup complete")
-	logger.Printf(`Run the program view it at %s`, ko.String("app.address"))
+	logger.Printf(`Run the program and access the dashboard at %s`, ko.String("app.address"))
 
 }
 

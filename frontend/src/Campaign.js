@@ -28,8 +28,8 @@ import Delta from "quill-delta"
 import "react-quill/dist/quill.snow.css"
 
 const formItemLayout = {
-  labelCol: { xs: { span: 16 }, sm: { span: 4 } },
-  wrapperCol: { xs: { span: 16 }, sm: { span: 10 } }
+  labelCol: { xs: { span: 16 }, sm: { span: 10 }, md: { span: 4 } },
+  wrapperCol: { xs: { span: 16 }, sm: { span: 14 }, md: { span: 10 } }
 }
 
 class Editor extends React.PureComponent {
@@ -217,14 +217,12 @@ class TheFormDef extends React.PureComponent {
   }
 
   componentWillReceiveProps(nextProps) {
-    const has = nextProps.isSingle && nextProps.record.send_at !== null
-    if (!has) {
+    if (nextProps.record.send_at === this.props.record.send_at) {
       return
     }
-
-    if (this.state.sendLater !== has) {
-      this.setState({ sendLater: has })
-    }
+    this.setState({
+      sendLater: nextProps.isSingle && nextProps.record.send_at !== null
+    })
   }
 
   validateEmail = (rule, value, callback) => {
@@ -303,7 +301,11 @@ class TheFormDef extends React.PureComponent {
             cs.ModelCampaigns,
             cs.Routes.UpdateCampaign,
             cs.MethodPut,
-            { ...values, id: this.props.record.id }
+            {
+              ...values,
+              id: this.props.record.id,
+              send_at: !this.state.sendLater ? null : values.send_at
+            }
           )
           .then(resp => {
             notification["success"]({
@@ -511,9 +513,7 @@ class TheFormDef extends React.PureComponent {
             <Form.Item {...formItemLayout} label="Send later?">
               <Row>
                 <Col span={2}>
-                  {getFieldDecorator("send_later", {
-                    defaultChecked: this.props.isSingle
-                  })(
+                  {getFieldDecorator("send_later")(
                     <Switch
                       disabled={this.props.formDisabled}
                       checked={this.state.sendLater}
@@ -521,7 +521,7 @@ class TheFormDef extends React.PureComponent {
                     />
                   )}
                 </Col>
-                <Col span={12}>
+                <Col xs={24} sm={2}>
                   {this.state.sendLater &&
                     getFieldDecorator("send_at", {
                       initialValue:
@@ -656,7 +656,7 @@ class Campaign extends React.PureComponent {
     return (
       <section className="content campaign">
         <Row>
-          <Col span={16}>
+          <Col xs={24} sm={16}>
             {!this.state.record.id && <h1>Create a campaign</h1>}
             {this.state.record.id && (
               <div>
@@ -675,7 +675,7 @@ class Campaign extends React.PureComponent {
               </div>
             )}
           </Col>
-          <Col span={8} className="right">
+          <Col xs={24} sm={8} className="right header-action-break">
             {!this.state.formDisabled && !this.state.loading && (
               <div>
                 <Button
