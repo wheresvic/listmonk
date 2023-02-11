@@ -4,10 +4,13 @@ import {
 } from 'buefy';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import updateLocale from 'dayjs/plugin/updateLocale';
 
+dayjs.extend(updateLocale);
 dayjs.extend(relativeTime);
 
 const reEmail = /(.+?)@(.+?)/ig;
+const prefKey = 'listmonk_pref';
 
 const htmlEntities = {
   '&': '&amp;',
@@ -24,7 +27,29 @@ export default class Utils {
   constructor(i18n) {
     this.i18n = i18n;
     this.intlNumFormat = new Intl.NumberFormat();
+
+    if (i18n) {
+      dayjs.updateLocale('en', {
+        relativeTime: {
+          future: '%s',
+          past: '%s',
+          s: `${i18n.tc('globals.terms.second', 2)}`,
+          m: `1 ${i18n.tc('globals.terms.minute', 1)}`,
+          mm: `%d ${i18n.tc('globals.terms.minute', 2)}`,
+          h: `1 ${i18n.tc('globals.terms.hour', 1)}`,
+          hh: `%d ${i18n.tc('globals.terms.hour', 2)}`,
+          d: `1 ${i18n.tc('globals.terms.day', 1)}`,
+          dd: `%d ${i18n.tc('globals.terms.day', 2)}`,
+          M: `1 ${i18n.tc('globals.terms.month', 1)}`,
+          MM: `%d ${i18n.tc('globals.terms.month', 2)}`,
+          y: `${i18n.tc('globals.terms.year', 1)}`,
+          yy: `%d ${i18n.tc('globals.terms.year', 2)}`,
+        },
+      });
+    }
   }
+
+  getDate = (d) => dayjs(d);
 
   // Parses an ISO timestamp to a simpler form.
   niceDate = (stamp, showTime) => {
@@ -33,7 +58,7 @@ export default class Utils {
     }
 
     const d = dayjs(stamp);
-    const day = this.i18n.t(`globals.days.${d.day()}`);
+    const day = this.i18n.t(`globals.days.${d.day() + 1}`);
     const month = this.i18n.t(`globals.months.${d.month() + 1}`);
     let out = d.format(`[${day},] DD [${month}] YYYY`);
     if (showTime) {
@@ -108,7 +133,7 @@ export default class Utils {
   confirm = (msg, onConfirm, onCancel) => {
     Dialog.confirm({
       scroll: 'keep',
-      message: !msg ? this.i18n.t('globals.messages.confirm') : msg,
+      message: !msg ? this.i18n.t('globals.messages.confirm') : this.escapeHTML(msg),
       confirmText: this.i18n.t('globals.buttons.ok'),
       cancelText: this.i18n.t('globals.buttons.cancel'),
       onConfirm,
@@ -116,12 +141,14 @@ export default class Utils {
     });
   };
 
-  prompt = (msg, inputAttrs, onConfirm, onCancel) => {
+  prompt = (msg, inputAttrs, onConfirm, onCancel, params) => {
+    const p = params || {};
+
     Dialog.prompt({
       scroll: 'keep',
-      message: msg,
-      confirmText: this.i18n.t('globals.buttons.ok'),
-      cancelText: this.i18n.t('globals.buttons.cancel'),
+      message: this.escapeHTML(msg),
+      confirmText: p.confirmText || this.i18n.t('globals.buttons.ok'),
+      cancelText: p.cancelText || this.i18n.t('globals.buttons.cancel'),
       inputAttrs: {
         type: 'string',
         maxlength: 200,
@@ -188,4 +215,23 @@ export default class Utils {
 
     return obj;
   };
+
+  getPref = (key) => {
+    if (localStorage.getItem(prefKey) === null) {
+      return null;
+    }
+
+    const p = JSON.parse(localStorage.getItem(prefKey));
+    return key in p ? p[key] : null;
+  };
+
+  setPref = (key, val) => {
+    let p = {};
+    if (localStorage.getItem(prefKey) !== null) {
+      p = JSON.parse(localStorage.getItem(prefKey));
+    }
+
+    p[key] = val;
+    localStorage.setItem(prefKey, JSON.stringify(p));
+  }
 }

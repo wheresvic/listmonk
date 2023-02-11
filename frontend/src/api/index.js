@@ -238,6 +238,9 @@ export const updateCampaign = async (id, data) => http.put(`/api/campaigns/${id}
 export const changeCampaignStatus = async (id, status) => http.put(`/api/campaigns/${id}/status`,
   { status }, { loading: models.campaigns });
 
+export const updateCampaignArchive = async (id, data) => http.put(`/api/campaigns/${id}/archive`, data,
+  { loading: models.campaigns });
+
 export const deleteCampaign = async (id) => http.delete(`/api/campaigns/${id}`,
   { loading: models.campaigns });
 
@@ -277,6 +280,9 @@ export const getSettings = async () => http.get('/api/settings',
 export const updateSettings = async (data) => http.put('/api/settings', data,
   { loading: models.settings });
 
+export const testSMTP = async (data) => http.post('/api/settings/smtp/test', data,
+  { loading: models.settings, disableToast: true });
+
 export const getLogs = async () => http.get('/api/logs',
   { loading: models.logs, camelCase: false });
 
@@ -286,3 +292,12 @@ export const getLang = async (lang) => http.get(`/api/lang/${lang}`,
 export const logout = async () => http.get('/api/logout', {
   auth: { username: 'wrong', password: 'wrong' },
 });
+
+export const deleteGCCampaignAnalytics = async (typ, beforeDate) => http.delete(`/api/maintenance/analytics/${typ}`,
+  { loading: models.maintenance, params: { before_date: beforeDate } });
+
+export const deleteGCSubscribers = async (typ) => http.delete(`/api/maintenance/subscribers/${typ}`,
+  { loading: models.maintenance });
+
+export const deleteGCSubscriptions = async (beforeDate) => http.delete('/api/maintenance/subscriptions/unconfirmed',
+  { loading: models.maintenance, params: { before_date: beforeDate } });

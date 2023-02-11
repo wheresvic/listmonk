@@ -24,6 +24,7 @@ import (
 	"github.com/knadh/koanf/providers/posflag"
 	"github.com/knadh/listmonk/internal/bounce"
 	"github.com/knadh/listmonk/internal/bounce/mailbox"
+	"github.com/knadh/listmonk/internal/captcha"
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/manager"
 	"github.com/knadh/listmonk/internal/media"
@@ -36,6 +37,7 @@ import (
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
 	"github.com/labstack/echo/v4"
+	"github.com/lib/pq"
 	flag "github.com/spf13/pflag"
 )
 
@@ -48,23 +50,31 @@ const (
 
 // constants contains static, constant config values required by the app.
 type constants struct {
+	SiteName              string   `koanf:"site_name"`
 	RootURL               string   `koanf:"root_url"`
 	LogoURL               string   `koanf:"logo_url"`
 	FaviconURL            string   `koanf:"favicon_url"`
 	FromEmail             string   `koanf:"from_email"`
 	NotifyEmails          []string `koanf:"notify_emails"`
 	EnablePublicSubPage   bool     `koanf:"enable_public_subscription_page"`
+	EnablePublicArchive   bool     `koanf:"enable_public_archive"`
 	SendOptinConfirmation bool     `koanf:"send_optin_confirmation"`
 	Lang                  string   `koanf:"lang"`
 	DBBatchSize           int      `koanf:"batch_size"`
 	Privacy               struct {
 		IndividualTracking bool            `koanf:"individual_tracking"`
+		AllowPreferences   bool            `koanf:"allow_preferences"`
 		AllowBlocklist     bool            `koanf:"allow_blocklist"`
 		AllowExport        bool            `koanf:"allow_export"`
 		AllowWipe          bool            `koanf:"allow_wipe"`
 		Exportable         map[string]bool `koanf:"-"`
 		DomainBlocklist    map[string]bool `koanf:"-"`
 	} `koanf:"privacy"`
+	Security struct {
+		EnableCaptcha bool   `koanf:"enable_captcha"`
+		CaptchaKey    string `koanf:"captcha_key"`
+		CaptchaSecret string `koanf:"captcha_secret"`
+	} `koanf:"security"`
 	AdminUsername []byte `koanf:"admin_username"`
 	AdminPassword []byte `koanf:"admin_password"`
 
@@ -80,6 +90,7 @@ type constants struct {
 	ViewTrackURL  string
 	OptinURL      string
 	MessageURL    string
+	ArchiveURL    string
 	MediaProvider string
 
 	BounceWebhooksEnabled bool
@@ -104,7 +115,7 @@ func initFlags() {
 	f.StringSlice("config", []string{"config.toml"},
 		"path to one or more config files (will be merged in order)")
 	f.Bool("install", false, "setup database (first time)")
-	f.Bool("idempotent", false, "make --install run only if the databse isn't already setup")
+	f.Bool("idempotent", false, "make --install run only if the database isn't already setup")
 	f.Bool("upgrade", false, "upgrade database to the current version")
 	f.Bool("version", false, "show current version of the build")
 	f.Bool("new-config", false, "generate sample config file")
@@ -129,13 +140,13 @@ func initConfigFiles(files []string, ko *koanf.Koanf) {
 			if os.IsNotExist(err) {
 				lo.Fatal("config file not found. If there isn't one yet, run --new-config to generate one.")
 			}
-			lo.Fatalf("error loadng config from file: %v.", err)
+			lo.Fatalf("error loading config from file: %v.", err)
 		}
 	}
 }
 
 // initFileSystem initializes the stuffbin FileSystem to provide
-// access to bunded static assets to the app.
+// access to bundled static assets to the app.
 func initFS(appDir, frontendDir, staticDir, i18nDir string) stuffbin.FileSystem {
 	var (
 		// stuffbin real_path:virtual_alias paths to map local assets on disk
@@ -236,22 +247,38 @@ func initFS(appDir, frontendDir, staticDir, i18nDir string) stuffbin.FileSystem 
 // initDB initializes the main DB connection pool and parse and loads the app's
 // SQL queries into a prepared query map.
 func initDB() *sqlx.DB {
-	var dbCfg dbConf
-	if err := ko.Unmarshal("db", &dbCfg); err != nil {
+	var c struct {
+		Host        string        `koanf:"host"`
+		Port        int           `koanf:"port"`
+		User        string        `koanf:"user"`
+		Password    string        `koanf:"password"`
+		DBName      string        `koanf:"database"`
+		SSLMode     string        `koanf:"ssl_mode"`
+		Params      string        `koanf:"params"`
+		MaxOpen     int           `koanf:"max_open"`
+		MaxIdle     int           `koanf:"max_idle"`
+		MaxLifetime time.Duration `koanf:"max_lifetime"`
+	}
+	if err := ko.Unmarshal("db", &c); err != nil {
 		lo.Fatalf("error loading db config: %v", err)
 	}
 
-	lo.Printf("connecting to db: %s:%d/%s", dbCfg.Host, dbCfg.Port, dbCfg.DBName)
-	db, err := connectDB(dbCfg)
+	lo.Printf("connecting to db: %s:%d/%s", c.Host, c.Port, c.DBName)
+	db, err := sqlx.Connect("postgres",
+		fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s %s", c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode, c.Params))
 	if err != nil {
 		lo.Fatalf("error connecting to DB: %v", err)
 	}
+
+	db.SetMaxOpenConns(c.MaxOpen)
+	db.SetMaxIdleConns(c.MaxIdle)
+	db.SetConnMaxLifetime(c.MaxLifetime)
+
 	return db
 }
 
-// initQueries loads named SQL queries from the queries file and optionally
-// prepares them.
-func initQueries(sqlFile string, db *sqlx.DB, fs stuffbin.FileSystem, prepareQueries bool) (goyesql.Queries, *Queries) {
+// readQueries reads named SQL queries from the SQL queries file into a query map.
+func readQueries(sqlFile string, db *sqlx.DB, fs stuffbin.FileSystem) goyesql.Queries {
 	// Load SQL queries.
 	qB, err := fs.Read(sqlFile)
 	if err != nil {
@@ -262,24 +289,52 @@ func initQueries(sqlFile string, db *sqlx.DB, fs stuffbin.FileSystem, prepareQue
 		lo.Fatalf("error parsing SQL queries: %v", err)
 	}
 
-	if !prepareQueries {
-		return qMap, nil
+	return qMap
+}
+
+// prepareQueries queries prepares a query map and returns a *Queries
+func prepareQueries(qMap goyesql.Queries, db *sqlx.DB, ko *koanf.Koanf) *models.Queries {
+	var (
+		countQuery = "get-campaign-analytics-counts"
+		linkSel    = "*"
+	)
+	if ko.Bool("privacy.individual_tracking") {
+		countQuery = "get-campaign-analytics-unique-counts"
+		linkSel = "DISTINCT subscriber_id"
 	}
 
-	// Prepare queries.
-	var q Queries
+	// These don't exist in the SQL file but are in the queries struct to be prepared.
+	qMap["get-campaign-view-counts"] = &goyesql.Query{
+		Query: fmt.Sprintf(qMap[countQuery].Query, "campaign_views"),
+		Tags:  map[string]string{"name": "get-campaign-view-counts"},
+	}
+	qMap["get-campaign-click-counts"] = &goyesql.Query{
+		Query: fmt.Sprintf(qMap[countQuery].Query, "link_clicks"),
+		Tags:  map[string]string{"name": "get-campaign-click-counts"},
+	}
+	qMap["get-campaign-link-counts"].Query = fmt.Sprintf(qMap["get-campaign-link-counts"].Query, linkSel)
+
+	// Scan and prepare all queries.
+	var q models.Queries
 	if err := goyesqlx.ScanToStruct(&q, qMap, db.Unsafe()); err != nil {
 		lo.Fatalf("error preparing SQL queries: %v", err)
 	}
 
-	return qMap, &q
+	return &q
 }
 
-// initSettings loads settings from the DB.
-func initSettings(q *sqlx.Stmt) {
+// initSettings loads settings from the DB into the given Koanf map.
+func initSettings(query string, db *sqlx.DB, ko *koanf.Koanf) {
 	var s types.JSONText
-	if err := q.Get(&s); err != nil {
-		lo.Fatalf("error reading settings from DB: %s", pqErrMsg(err))
+	if err := db.Get(&s, query); err != nil {
+		msg := err.Error()
+		if err, ok := err.(*pq.Error); ok {
+			if err.Detail != "" {
+				msg = fmt.Sprintf("%s. %s", err, err.Detail)
+			}
+		}
+
+		lo.Fatalf("error reading settings from DB: %s", msg)
 	}
 
 	// Setting keys are dot separated, eg: app.favicon_url. Unflatten them into
@@ -301,6 +356,9 @@ func initConstants() *constants {
 	}
 	if err := ko.Unmarshal("privacy", &c.Privacy); err != nil {
 		lo.Fatalf("error loading app.privacy config: %v", err)
+	}
+	if err := ko.Unmarshal("security", &c.Security); err != nil {
+		lo.Fatalf("error loading app.security config: %v", err)
 	}
 	if err := ko.UnmarshalWithConf("appearance", &c.Appearance, koanf.UnmarshalConf{FlatPaths: true}); err != nil {
 		lo.Fatalf("error loading app.appearance config: %v", err)
@@ -324,6 +382,9 @@ func initConstants() *constants {
 
 	// url.com/link/{campaign_uuid}/{subscriber_uuid}
 	c.MessageURL = fmt.Sprintf("%s/campaign/%%s/%%s", c.RootURL)
+
+	// url.com/archive
+	c.ArchiveURL = c.RootURL + "/archive"
 
 	// url.com/campaign/{campaign_uuid}/{subscriber_uuid}/px.png
 	c.ViewTrackURL = fmt.Sprintf("%s/campaign/%%s/%%s/px.png", c.RootURL)
@@ -351,7 +412,7 @@ func initI18n(lang string, fs stuffbin.FileSystem) *i18n.I18n {
 }
 
 // initCampaignManager initializes the campaign manager.
-func initCampaignManager(q *Queries, cs *constants, app *App) *manager.Manager {
+func initCampaignManager(q *models.Queries, cs *constants, app *App) *manager.Manager {
 	campNotifCB := func(subject string, data interface{}) error {
 		return app.sendNotification(cs.NotifyEmails, subject, notifTplCampaign, data)
 	}
@@ -379,6 +440,7 @@ func initCampaignManager(q *Queries, cs *constants, app *App) *manager.Manager {
 		LinkTrackURL:          cs.LinkTrackURL,
 		ViewTrackURL:          cs.ViewTrackURL,
 		MessageURL:            cs.MessageURL,
+		ArchiveURL:            cs.ArchiveURL,
 		UnsubHeader:           ko.Bool("privacy.unsubscribe_header"),
 		SlidingWindow:         ko.Bool("app.message_sliding_window"),
 		SlidingWindowDuration: ko.Duration("app.message_sliding_window_duration"),
@@ -388,8 +450,24 @@ func initCampaignManager(q *Queries, cs *constants, app *App) *manager.Manager {
 	}, newManagerStore(q), campNotifCB, app.i18n, lo)
 }
 
+func initTxTemplates(m *manager.Manager, app *App) {
+	tpls, err := app.core.GetTemplates(models.TemplateTypeTx, false)
+	if err != nil {
+		lo.Fatalf("error loading transactional templates: %v", err)
+	}
+
+	for _, t := range tpls {
+		tpl := t
+		if err := tpl.Compile(app.manager.GenericTemplateFuncs()); err != nil {
+			lo.Printf("error compiling transactional template %d: %v", tpl.ID, err)
+			continue
+		}
+		m.CacheTpl(tpl.ID, &tpl)
+	}
+}
+
 // initImporter initializes the bulk subscriber importer.
-func initImporter(q *Queries, db *sqlx.DB, app *App) *subimporter.Importer {
+func initImporter(q *models.Queries, db *sqlx.DB, app *App) *subimporter.Importer {
 	return subimporter.New(
 		subimporter.Options{
 			DomainBlocklist:    app.constants.Privacy.DomainBlocklist,
@@ -415,7 +493,7 @@ func initSMTPMessenger(m *manager.Manager) messenger.Messenger {
 		lo.Fatalf("no SMTP servers found in config")
 	}
 
-	// Load the config for multipme SMTP servers.
+	// Load the config for multiple SMTP servers.
 	for _, item := range items {
 		if !item.Bool("enabled") {
 			continue
@@ -527,6 +605,9 @@ func initNotifTemplates(path string, fs stuffbin.FileSystem, i *i18n.I18n, cs *c
 		"L": func() *i18n.I18n {
 			return i
 		},
+		"Safe": func(safeHTML string) template.HTML {
+			return template.HTML(safeHTML)
+		},
 	}
 
 	tpls, err := stuffbin.ParseTemplatesGlob(funcs, fs, "/static/email-templates/*.html")
@@ -553,7 +634,7 @@ func initNotifTemplates(path string, fs stuffbin.FileSystem, i *i18n.I18n, cs *c
 	h := make([]byte, ln)
 	copy(h, html[0:ln])
 
-	if !bytes.Contains(bytes.ToLower(h), []byte("<!doctype html>")) {
+	if !bytes.Contains(bytes.ToLower(h), []byte("<!doctype html")) {
 		out.contentType = models.CampaignContentTypePlain
 		lo.Println("system e-mail templates are plaintext")
 	}
@@ -565,12 +646,12 @@ func initNotifTemplates(path string, fs stuffbin.FileSystem, i *i18n.I18n, cs *c
 // for incoming bounce events.
 func initBounceManager(app *App) *bounce.Manager {
 	opt := bounce.Opt{
-		BounceCount:     ko.MustInt("bounce.count"),
-		BounceAction:    ko.MustString("bounce.action"),
 		WebhooksEnabled: ko.Bool("bounce.webhooks_enabled"),
 		SESEnabled:      ko.Bool("bounce.ses_enabled"),
 		SendgridEnabled: ko.Bool("bounce.sendgrid_enabled"),
 		SendgridKey:     ko.String("bounce.sendgrid_key"),
+
+		RecordBounceCB: app.core.RecordBounce,
 	}
 
 	// For now, only one mailbox is supported.
@@ -623,10 +704,14 @@ func initHTTPServer(app *App) *echo.Echo {
 		lo.Fatalf("error parsing public templates: %v", err)
 	}
 	srv.Renderer = &tplRenderer{
-		templates:  tpl,
-		RootURL:    app.constants.RootURL,
-		LogoURL:    app.constants.LogoURL,
-		FaviconURL: app.constants.FaviconURL}
+		templates:           tpl,
+		SiteName:            app.constants.SiteName,
+		RootURL:             app.constants.RootURL,
+		LogoURL:             app.constants.LogoURL,
+		FaviconURL:          app.constants.FaviconURL,
+		EnablePublicSubPage: app.constants.EnablePublicSubPage,
+		EnablePublicArchive: app.constants.EnablePublicArchive,
+	}
 
 	// Initialize the static file server.
 	fSrv := app.fs.FileServer()
@@ -657,6 +742,12 @@ func initHTTPServer(app *App) *echo.Echo {
 	}()
 
 	return srv
+}
+
+func initCaptcha() *captcha.Captcha {
+	return captcha.New(captcha.Opt{
+		CaptchaSecret: ko.String("security.captcha_secret"),
+	})
 }
 
 func awaitReload(sigChan chan os.Signal, closerWait chan bool, closer func()) chan bool {

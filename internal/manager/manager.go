@@ -15,6 +15,7 @@ import (
 	"github.com/knadh/listmonk/internal/i18n"
 	"github.com/knadh/listmonk/internal/messenger"
 	"github.com/knadh/listmonk/models"
+	"github.com/paulbellamy/ratecounter"
 )
 
 const (
@@ -39,6 +40,11 @@ type Store interface {
 	DeleteSubscriber(id int64) error
 }
 
+// CampStats contains campaign stats like per minute send rate.
+type CampStats struct {
+	SendRate int
+}
+
 // Manager handles the scheduling, processing, and queuing of campaigns
 // and message pushes.
 type Manager struct {
@@ -50,8 +56,12 @@ type Manager struct {
 	logger     *log.Logger
 
 	// Campaigns that are currently running.
-	camps    map[int]*models.Campaign
-	campsMut sync.RWMutex
+	camps     map[int]*models.Campaign
+	campRates map[int]*ratecounter.RateCounter
+	campsMut  sync.RWMutex
+
+	tpls    map[int]*models.Template
+	tplsMut sync.RWMutex
 
 	// Links generated using Track() are cached here so as to not query
 	// the database for the link UUID for every message sent. This has to
@@ -70,6 +80,8 @@ type Manager struct {
 	// sending further messages.
 	slidingWindowNumMsg int
 	slidingWindowStart  time.Time
+
+	tplFuncs template.FuncMap
 }
 
 // CampaignMessage represents an instance of campaign message to be pushed out,
@@ -113,6 +125,7 @@ type Config struct {
 	OptinURL              string
 	MessageURL            string
 	ViewTrackURL          string
+	ArchiveURL            string
 	UnsubHeader           bool
 
 	// Interval to scan the DB for active campaign checkpoints.
@@ -145,7 +158,7 @@ func New(cfg Config, store Store, notifCB models.AdminNotifCallback, i *i18n.I18
 		cfg.MessageRate = 1
 	}
 
-	return &Manager{
+	m := &Manager{
 		cfg:                cfg,
 		store:              store,
 		i18n:               i,
@@ -153,6 +166,8 @@ func New(cfg Config, store Store, notifCB models.AdminNotifCallback, i *i18n.I18
 		logger:             l,
 		messengers:         make(map[string]messenger.Messenger),
 		camps:              make(map[int]*models.Campaign),
+		campRates:          make(map[int]*ratecounter.RateCounter),
+		tpls:               make(map[int]*models.Template),
 		links:              make(map[string]string),
 		subFetchQueue:      make(chan *models.Campaign, cfg.Concurrency),
 		campMsgQueue:       make(chan CampaignMessage, cfg.Concurrency*2),
@@ -161,6 +176,9 @@ func New(cfg Config, store Store, notifCB models.AdminNotifCallback, i *i18n.I18
 		campMsgErrorCounts: make(map[int]int),
 		slidingWindowStart: time.Now(),
 	}
+	m.tplFuncs = m.makeGnericFuncMap()
+
+	return m
 }
 
 // NewCampaignMessage creates and returns a CampaignMessage that is made available
@@ -209,7 +227,7 @@ func (m *Manager) PushMessage(msg Message) error {
 	return nil
 }
 
-// PushCampaignMessage pushes a campaign messages to be sent out by the workers.
+// PushCampaignMessage pushes a campaign messages into a queue to be sent out by the workers.
 // It times out if the queue is busy.
 func (m *Manager) PushCampaignMessage(msg CampaignMessage) error {
 	t := time.NewTicker(pushTimeout)
@@ -235,6 +253,19 @@ func (m *Manager) HasRunningCampaigns() bool {
 	m.campsMut.Lock()
 	defer m.campsMut.Unlock()
 	return len(m.camps) > 0
+}
+
+// GetCampaignStats returns campaign statistics.
+func (m *Manager) GetCampaignStats(id int) CampStats {
+	n := 0
+
+	m.campsMut.Lock()
+	if r, ok := m.campRates[id]; ok {
+		n = int(r.Rate())
+	}
+	m.campsMut.Unlock()
+
+	return CampStats{SendRate: n}
 }
 
 // Run is a blocking function (that should be invoked as a goroutine)
@@ -275,6 +306,33 @@ func (m *Manager) Run() {
 			m.sendNotif(newC, newC.Status, "")
 		}
 	}
+}
+
+// CacheTpl caches a template for ad-hoc use. This is currently only used by tx templates.
+func (m *Manager) CacheTpl(id int, tpl *models.Template) {
+	m.tplsMut.Lock()
+	m.tpls[id] = tpl
+	m.tplsMut.Unlock()
+}
+
+// DeleteTpl deletes a cached template.
+func (m *Manager) DeleteTpl(id int) {
+	m.tplsMut.Lock()
+	delete(m.tpls, id)
+	m.tplsMut.Unlock()
+}
+
+// GetTpl returns a cached template.
+func (m *Manager) GetTpl(id int) (*models.Template, error) {
+	m.tplsMut.RLock()
+	tpl, ok := m.tpls[id]
+	m.tplsMut.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("template %d not found", id)
+	}
+
+	return tpl, nil
 }
 
 // worker is a blocking function that perpetually listents to events (message) on different
@@ -337,8 +395,15 @@ func (m *Manager) worker() {
 				select {
 				case m.campMsgErrorQueue <- msgError{camp: msg.Campaign, err: err}:
 				default:
+					continue
 				}
 			}
+
+			m.campsMut.Lock()
+			if r, ok := m.campRates[msg.Campaign.ID]; ok {
+				r.Incr(1)
+			}
+			m.campsMut.Unlock()
 
 		// Arbitrary message.
 		case msg, ok := <-m.msgQueue:
@@ -387,6 +452,9 @@ func (m *Manager) TemplateFuncs(c *models.Campaign) template.FuncMap {
 		"UnsubscribeURL": func(msg *CampaignMessage) string {
 			return msg.unsubURL
 		},
+		"ManageURL": func(msg *CampaignMessage) string {
+			return msg.unsubURL + "?manage=true"
+		},
 		"OptinURL": func(msg *CampaignMessage) string {
 			// Add list IDs.
 			// TODO: Show private lists list on optin e-mail
@@ -395,23 +463,20 @@ func (m *Manager) TemplateFuncs(c *models.Campaign) template.FuncMap {
 		"MessageURL": func(msg *CampaignMessage) string {
 			return fmt.Sprintf(m.cfg.MessageURL, c.UUID, msg.Subscriber.UUID)
 		},
-		"Date": func(layout string) string {
-			if layout == "" {
-				layout = time.ANSIC
-			}
-			return time.Now().Format(layout)
-		},
-		"L": func() *i18n.I18n {
-			return m.i18n
-		},
-		"Safe": func(safeHTML string) template.HTML {
-			return template.HTML(safeHTML)
+		"ArchiveURL": func() string {
+			return m.cfg.ArchiveURL
 		},
 	}
-	for k, v := range sprig.GenericFuncMap() {
+
+	for k, v := range m.tplFuncs {
 		f[k] = v
 	}
+
 	return f
+}
+
+func (m *Manager) GenericTemplateFuncs() template.FuncMap {
+	return m.tplFuncs
 }
 
 // Close closes and exits the campaign manager.
@@ -497,6 +562,7 @@ func (m *Manager) addCampaign(c *models.Campaign) error {
 	// Add the campaign to the active map.
 	m.campsMut.Lock()
 	m.camps[c.ID] = c
+	m.campRates[c.ID] = ratecounter.NewRateCounter(time.Minute)
 	m.campsMut.Unlock()
 	return nil
 }
@@ -578,7 +644,7 @@ func (m *Manager) nextSubscribers(c *models.Campaign, batchSize int) (bool, erro
 	return true, nil
 }
 
-// isCampaignProcessing checks if the campaign is bing processed.
+// isCampaignProcessing checks if the campaign is being processed.
 func (m *Manager) isCampaignProcessing(id int) bool {
 	m.campsMut.RLock()
 	_, ok := m.camps[id]
@@ -589,6 +655,7 @@ func (m *Manager) isCampaignProcessing(id int) bool {
 func (m *Manager) exhaustCampaign(c *models.Campaign, status string) (*models.Campaign, error) {
 	m.campsMut.Lock()
 	delete(m.camps, c.ID)
+	delete(m.campRates, c.ID)
 	m.campsMut.Unlock()
 
 	// A status has been passed. Change the campaign's status
@@ -626,6 +693,8 @@ func (m *Manager) exhaustCampaign(c *models.Campaign, status string) (*models.Ca
 // trackLink register a URL and return its UUID to be used in message templates
 // for tracking links.
 func (m *Manager) trackLink(url, campUUID, subUUID string) string {
+	url = strings.ReplaceAll(url, "&amp;", "&")
+
 	m.linksMut.RLock()
 	if uu, ok := m.links[url]; ok {
 		m.linksMut.RUnlock()
@@ -718,4 +787,27 @@ func (m *CampaignMessage) AltBody() []byte {
 	out := make([]byte, len(m.altBody))
 	copy(out, m.altBody)
 	return out
+}
+
+func (m *Manager) makeGnericFuncMap() template.FuncMap {
+	f := template.FuncMap{
+		"Date": func(layout string) string {
+			if layout == "" {
+				layout = time.ANSIC
+			}
+			return time.Now().Format(layout)
+		},
+		"L": func() *i18n.I18n {
+			return m.i18n
+		},
+		"Safe": func(safeHTML string) template.HTML {
+			return template.HTML(safeHTML)
+		},
+	}
+
+	for k, v := range sprig.GenericFuncMap() {
+		f[k] = v
+	}
+
+	return f
 }

@@ -10,7 +10,6 @@ import (
 
 	"github.com/gofrs/uuid"
 	"github.com/jmoiron/sqlx"
-	goyesqlx "github.com/knadh/goyesql/v2/sqlx"
 	"github.com/knadh/listmonk/models"
 	"github.com/knadh/stuffbin"
 	"github.com/lib/pq"
@@ -19,7 +18,7 @@ import (
 // install runs the first time setup of creating and
 // migrating the database and creating the super user.
 func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempotent bool) {
-	qMap, _ := initQueries(queryFilePath, db, fs, false)
+	qMap := readQueries(queryFilePath, db, fs)
 
 	fmt.Println("")
 	if !idempotent {
@@ -62,10 +61,7 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 	}
 
 	// Load the queries.
-	var q Queries
-	if err := goyesqlx.ScanToStruct(&q, qMap, db.Unsafe()); err != nil {
-		lo.Fatalf("error loading SQL queries: %v", err)
-	}
+	q := prepareQueries(qMap, db, ko)
 
 	// Sample list.
 	var (
@@ -78,6 +74,7 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		models.ListTypePrivate,
 		models.ListOptinSingle,
 		pq.StringArray{"test"},
+		"",
 	); err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}
@@ -87,6 +84,7 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		models.ListTypePublic,
 		models.ListOptinDouble,
 		pq.StringArray{"test"},
+		"",
 	); err != nil {
 		lo.Fatalf("error creating list: %v", err)
 	}
@@ -113,21 +111,29 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		lo.Fatalf("error creating subscriber: %v", err)
 	}
 
-	// Default template.
-	tplBody, err := fs.Get("/static/email-templates/default.tpl")
+	// Default campaign template.
+	campTpl, err := fs.Get("/static/email-templates/default.tpl")
 	if err != nil {
 		lo.Fatalf("error reading default e-mail template: %v", err)
 	}
 
-	var tplID int
-	if err := q.CreateTemplate.Get(&tplID,
-		"Default template",
-		string(tplBody.ReadBytes()),
-	); err != nil {
-		lo.Fatalf("error creating default template: %v", err)
+	var campTplID int
+	if err := q.CreateTemplate.Get(&campTplID, "Default campaign template", models.TemplateTypeCampaign, "", campTpl.ReadBytes()); err != nil {
+		lo.Fatalf("error creating default campaign template: %v", err)
 	}
-	if _, err := q.SetDefaultTemplate.Exec(tplID); err != nil {
+	if _, err := q.SetDefaultTemplate.Exec(campTplID); err != nil {
 		lo.Fatalf("error setting default template: %v", err)
+	}
+
+	// Default campaign archive template.
+	archiveTpl, err := fs.Get("/static/email-templates/default-archive.tpl")
+	if err != nil {
+		lo.Fatalf("error reading default archive template: %v", err)
+	}
+
+	var archiveTplID int
+	if err := q.CreateTemplate.Get(&archiveTplID, "Default archive template", models.TemplateTypeCampaign, "", archiveTpl.ReadBytes()); err != nil {
+		lo.Fatalf("error creating default campaign template: %v", err)
 	}
 
 	// Sample campaign.
@@ -150,10 +156,23 @@ func install(lastVer string, db *sqlx.DB, fs stuffbin.FileSystem, prompt, idempo
 		json.RawMessage("[]"),
 		pq.StringArray{"test-campaign"},
 		emailMsgr,
-		1,
+		campTplID,
 		pq.Int64Array{1},
+		false,
+		archiveTplID,
+		`{"name": "Subscriber"}`,
 	); err != nil {
 		lo.Fatalf("error creating sample campaign: %v", err)
+	}
+
+	// Sample tx template.
+	txTpl, err := fs.Get("/static/email-templates/sample-tx.tpl")
+	if err != nil {
+		lo.Fatalf("error reading default e-mail template: %v", err)
+	}
+
+	if _, err := q.CreateTemplate.Exec("Sample transactional template", models.TemplateTypeTx, "Welcome {{ .Subscriber.Name }}", txTpl.ReadBytes()); err != nil {
+		lo.Fatalf("error creating sample transactional template: %v", err)
 	}
 
 	lo.Printf("setup complete")

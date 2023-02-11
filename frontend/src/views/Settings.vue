@@ -21,7 +21,7 @@
       <hr />
 
       <section class="wrap">
-          <b-tabs type="is-boxed" :animated="false">
+          <b-tabs type="is-boxed" :animated="false" v-model="tab">
             <b-tab-item :label="$t('settings.general.name')" label-position="on-border">
               <general-settings :form="form" :key="key" />
             </b-tab-item><!-- general -->
@@ -33,6 +33,10 @@
             <b-tab-item :label="$t('settings.privacy.name')">
               <privacy-settings :form="form" :key="key" />
             </b-tab-item><!-- privacy -->
+
+            <b-tab-item :label="$t('settings.security.name')">
+              <security-settings :form="form" :key="key" />
+            </b-tab-item><!-- security -->
 
             <b-tab-item :label="$t('settings.media.title')">
               <media-settings :form="form" :key="key" />
@@ -66,6 +70,7 @@ import { mapState } from 'vuex';
 import GeneralSettings from './settings/general.vue';
 import PerformanceSettings from './settings/performance.vue';
 import PrivacySettings from './settings/privacy.vue';
+import SecuritySettings from './settings/security.vue';
 import MediaSettings from './settings/media.vue';
 import SmtpSettings from './settings/smtp.vue';
 import BounceSettings from './settings/bounces.vue';
@@ -79,6 +84,7 @@ export default Vue.extend({
     GeneralSettings,
     PerformanceSettings,
     PrivacySettings,
+    SecuritySettings,
     MediaSettings,
     SmtpSettings,
     BounceSettings,
@@ -98,6 +104,7 @@ export default Vue.extend({
       // form is compared to detect changes.
       formCopy: '',
       form: {},
+      tab: 0,
     };
   },
 
@@ -133,6 +140,10 @@ export default Vue.extend({
 
       if (form['bounce.sendgrid_key'] === dummyPassword) {
         form['bounce.sendgrid_key'] = '';
+      }
+
+      if (form['security.captcha_secret'] === dummyPassword) {
+        form['security.captcha_secret'] = '';
       }
 
       for (let i = 0; i < form.messengers.length; i += 1) {
@@ -202,6 +213,7 @@ export default Vue.extend({
           d['upload.s3.aws_secret_access_key'] = dummyPassword;
         }
         d['bounce.sendgrid_key'] = dummyPassword;
+        d['security.captcha_secret'] = dummyPassword;
 
         // Domain blocklist array to multi-line string.
         d['privacy.domain_blocklist'] = d['privacy.domain_blocklist'].join('\n');
@@ -237,7 +249,14 @@ export default Vue.extend({
   },
 
   mounted() {
+    this.tab = this.$utils.getPref('settings.tab') || 0;
     this.getSettings();
+  },
+
+  watch: {
+    tab(t) {
+      this.$utils.setPref('settings.tab', t);
+    },
   },
 });
 </script>

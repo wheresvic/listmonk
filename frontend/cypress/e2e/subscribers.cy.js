@@ -28,6 +28,27 @@ describe('Subscribers', () => {
     });
   });
 
+  it('Exports subscribers', () => {
+    const cases = [
+      {
+        listIDs: [], ids: [], query: '', length: 3,
+      },
+      {
+        listIDs: [], ids: [], query: "name ILIKE '%anon%'", length: 2,
+      },
+      {
+        listIDs: [], ids: [], query: "name like 'nope'", length: 1,
+      },
+    ];
+
+    // listIDs[] and ids[] are unused for now as Cypress doesn't support encoding of arrays in `qs`.
+    cases.forEach((c) => {
+      cy.request({ url: `${apiUrl}/api/subscribers/export`, qs: { query: c.query, list_id: c.listIDs, id: c.ids } }).then((resp) => {
+        cy.expect(resp.body.trim().split('\n')).to.have.lengthOf(c.length);
+      });
+    });
+  });
+
 
   it('Advanced searches subscribers', () => {
     cy.get('[data-cy=btn-advanced-search]').click();
@@ -53,7 +74,7 @@ describe('Subscribers', () => {
   it('Does bulk subscriber list add and remove', () => {
     const cases = [
       // radio: action to perform, rows: table rows to select and perform on: [expected statuses of those rows after thea action]
-      { radio: 'check-list-add', lists: [0, 1], rows: { 0: ['unconfirmed', 'unconfirmed'] } },
+      { radio: 'check-list-add', lists: [0, 1], rows: { 0: ['confirmed', 'confirmed'] } },
       { radio: 'check-list-unsubscribe', lists: [0, 1], rows: { 0: ['unsubscribed', 'unsubscribed'], 1: ['unsubscribed'] } },
       { radio: 'check-list-remove', lists: [0, 1], rows: { 1: [] } },
       { radio: 'check-list-add', lists: [0, 1], rows: { 0: ['unsubscribed', 'unsubscribed'], 1: ['unconfirmed', 'unconfirmed'] } },
@@ -79,6 +100,11 @@ describe('Subscribers', () => {
 
       // Select the radio option in the modal.
       cy.get(`[data-cy=${c.radio}] .check`).click();
+
+      // For the first test, check the optin preconfirm box.
+      if (n === 0) {
+        cy.get('[data-cy=preconfirm]').click();
+      }
 
       // Save.
       cy.get('.modal button.is-primary').click();
@@ -253,24 +279,36 @@ describe('Domain blocklist', () => {
 
     // Add non-banned domain.
     cy.request({
-      method: 'POST', url: `${apiUrl}/api/subscribers`, failOnStatusCode: true,
-      body: { email: 'test1@noban.net', 'name': 'test', 'lists': [1], 'status': 'enabled' }
+      method: 'POST',
+      url: `${apiUrl}/api/subscribers`,
+      failOnStatusCode: true,
+      body: {
+        email: 'test1@noban.net', name: 'test', lists: [1], status: 'enabled',
+      },
     }).should((response) => {
       expect(response.status).to.equal(200);
     });
 
     // Add banned domain.
     cy.request({
-      method: 'POST', url: `${apiUrl}/api/subscribers`, failOnStatusCode: false,
-      body: { email: 'test1@ban.com', 'name': 'test', 'lists': [1], 'status': 'enabled' }
+      method: 'POST',
+      url: `${apiUrl}/api/subscribers`,
+      failOnStatusCode: false,
+      body: {
+        email: 'test1@ban.com', name: 'test', lists: [1], status: 'enabled',
+      },
     }).should((response) => {
       expect(response.status).to.equal(400);
     });
 
     // Modify an existinb subscriber to a banned domain.
     cy.request({
-      method: 'PUT', url: `${apiUrl}/api/subscribers/1`, failOnStatusCode: false,
-      body: { email: 'test3@ban.org', 'name': 'test', 'lists': [1], 'status': 'enabled' }
+      method: 'PUT',
+      url: `${apiUrl}/api/subscribers/1`,
+      failOnStatusCode: false,
+      body: {
+        email: 'test3@ban.org', name: 'test', lists: [1], status: 'enabled',
+      },
     }).should((response) => {
       expect(response.status).to.equal(400);
     });
@@ -305,16 +343,24 @@ describe('Domain blocklist', () => {
 
     // Add banned domain.
     cy.request({
-      method: 'POST', url: `${apiUrl}/api/subscribers`, failOnStatusCode: true,
-      body: { email: 'test4@BAN.com', 'name': 'test', 'lists': [1], 'status': 'enabled' }
+      method: 'POST',
+      url: `${apiUrl}/api/subscribers`,
+      failOnStatusCode: true,
+      body: {
+        email: 'test4@BAN.com', name: 'test', lists: [1], status: 'enabled',
+      },
     }).should((response) => {
       expect(response.status).to.equal(200);
     });
 
     // Modify an existinb subscriber to a banned domain.
     cy.request({
-      method: 'PUT', url: `${apiUrl}/api/subscribers/1`, failOnStatusCode: true,
-      body: { email: 'test4@BAN.org', 'name': 'test', 'lists': [1], 'status': 'enabled' }
+      method: 'PUT',
+      url: `${apiUrl}/api/subscribers/1`,
+      failOnStatusCode: true,
+      body: {
+        email: 'test4@BAN.org', name: 'test', lists: [1], status: 'enabled',
+      },
     }).should((response) => {
       expect(response.status).to.equal(200);
     });

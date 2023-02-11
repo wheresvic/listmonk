@@ -7,7 +7,7 @@
   font-style: normal;
   font-weight: 400;
   src: local(''),
-       url('assets/icons/inter-v3-regular.woff2') format('woff2'),
+       url('assets/fonts/Inter-Regular.woff2') format('woff2'),
 }
 
 /* import inter-600 */
@@ -16,7 +16,7 @@
   font-style: normal;
   font-weight: 600;
   src: local(''),
-       url('assets/icons/inter-v3-600.woff2') format('woff2'),
+       url('assets/fonts/Inter-Bold.woff2') format('woff2'),
 }
 
 $body-family: "Inter", "Helvetica Neue", sans-serif;
@@ -27,6 +27,7 @@ $primary: #0055d4;
 $green: #0db35e;
 $turquoise: $green;
 $red: #FF5722;
+
 $link: $primary;
 $input-placeholder-color: $grey-light;
 $grey-lightest: #eaeaea;
@@ -324,11 +325,51 @@ body.is-noscroll {
     cursor: not-allowed;
     color: $grey-light;
   }
+
+  td {
+    .fields {
+      font-size: $size-7;
+
+      p {
+        line-height: 0.775rem;
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+      }
+
+      label {
+        font-weight: bold;
+        text-align: left;
+        padding-bottom: 6px;
+        min-width: 100px;
+      }
+      span {
+        display: inline-block;
+      }
+      [class*=" mdi-"]::before {
+        margin-left: 0;
+      }
+    }
+
+  }
 }
 
 /* Modal */
 .modal {
   z-index: 950;
+
+  &.has-overflow {
+    overflow: auto !important;
+    .modal-content {
+      overflow: visible !important;
+    }
+    .modal-card {
+      overflow: visible !important;
+    }
+    .modal-card-body {
+      overflow: visible !important;
+    }
+  }
 }
 .modal-background {
   background: rgba(255, 255, 255, 0.7);
@@ -348,6 +389,7 @@ body.is-noscroll {
 .modal .modal-close.is-large {
   display: none;
 }
+
 
 /* Table */
 .b-table .level-left {
@@ -495,14 +537,14 @@ body.is-noscroll {
     color: $grey;
   }
 
-  &.private, &.scheduled, &.paused {
+  &.private, &.scheduled, &.paused, &.tx {
     $color: #ed7b00;
     color: $color;
     background: #fff7e6;
     border: 1px solid lighten($color, 37%);
     box-shadow: 1px 1px 0 lighten($color, 37%);
   }
-  &.public, &.running, &.list {
+  &.public, &.running, &.list, &.campaign {
     $color: $primary;
     color: lighten($color, 20%);;
     background: #e6f7ff;
@@ -594,8 +636,10 @@ section.dashboard {
 
 /* Lists page */
 section.lists {
-  td .tag {
-    min-width: 65px;
+  td {
+    .tag {
+      min-width: 65px;
+    }
   }
 }
 
@@ -662,24 +706,9 @@ section.campaigns {
         margin-top: 5px;
       }
 
-      p {
-        margin: 0 !important;
-      }
-
       &.lists ul {
         // font-size: $size-7;
         list-style-type: circle;
-      }
-
-      .fields {
-        font-size: $size-7;
-        label {
-          font-weight: bold;
-          text-align: right;
-          min-width: 50px;
-          margin-right: 10px;
-          display: inline-block;
-        }
       }
 
       &.draft {
@@ -787,6 +816,11 @@ section.analytics {
 }
 
 /* Template form */
+.templates {
+  td .tag {
+    min-width: 100px;
+  }
+}
 .template-modal {
   .template-modal-content {
     height: 95vh;
@@ -809,6 +843,10 @@ section.analytics {
   .html-editor {
     height: auto;
     min-height: 350px;
+  }
+  .smtp-shortcuts a {
+    margin-right: 15px;
+    display: inline-block;
   }
 }
 
@@ -1015,6 +1053,10 @@ section.analytics {
 @media screen and (max-width: 850px) {
   .page-header .buttons {
     display: block;
+  }
+
+  .b-tabs .tab-content {
+    padding: 15px 0 0 0;
   }
 }
 
